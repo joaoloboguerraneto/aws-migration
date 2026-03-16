@@ -1,4 +1,4 @@
-# Arquitectura
+# Arquitetura
 
 ## Rede (VPC)
 
