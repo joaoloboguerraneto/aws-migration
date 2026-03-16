@@ -1,100 +1,96 @@
-# Architecture Decision Record
+# Arquitectura
 
-## 1. Network Design (VPC)
+## Rede (VPC)
+
+O desenho da VPC segue o modelo de 3 camadas. A ideia é que cada camada só consegue falar com a camada adjacente nunca diretamente com uma camada que esteja 2 níveis acima ou abaixo.
 
 ### CIDR Plan
 
-| Subnet Type | AZ-a | AZ-b | Purpose |
-|-------------|------|------|---------|
+| Tipo | AZ-a | AZ-b | O que vive aqui |
+|------|------|------|-----------------|
 | Public | 10.0.1.0/24 | 10.0.2.0/24 | ALB, NAT Gateway |
-| Private | 10.0.10.0/24 | 10.0.20.0/24 | EKS worker nodes |
+| Private | 10.0.10.0/24 | 10.0.20.0/24 | Worker nodes do EKS |
 | Data | 10.0.100.0/24 | 10.0.200.0/24 | RDS, ElastiCache |
 
-### Why three subnet tiers?
-- **Public subnets** have a route to the Internet Gateway — only ALB and NAT Gateway reside here.
-- **Private subnets** route outbound traffic through NAT Gateway — EKS nodes live here. No direct inbound internet access.
-- **Data subnets** have no internet route at all — database and cache are fully isolated. Only the private subnets can reach them via Security Groups.
+As subnets de dados não têm rota para a internet nem de saída. Se um atacante comprometer um pod, não consegue chegar à base de dados sem passar pelo Security Group que só aceita tráfego vindo dos nodes do EKS na porta 3306.
 
-This follows the **defense-in-depth** principle: even if an attacker compromises a pod, they cannot reach the database without traversing a Security Group boundary.
+### Flow de tráfego
 
----
+```
+User → Route 53 → CloudFront > ALB (public subnet)
+                                  > Security Group
+                              EKS pods (private subnet)
+                                  > Security Group
+                              RDS MySQL (data subnet)
+```
 
-## 2. Compute — Why EKS over EC2?
+## Porquê EKS
 
-| Criteria | EC2 (like current) | EKS |
-|----------|-------------------|-----|
-| Scaling | Manual / ASG | HPA + Cluster Autoscaler |
-| Deployment | SSH + scripts | Declarative manifests |
-| Self-healing | Limited | Pod restart, node replacement |
-| Resource efficiency | Fixed allocation | Bin-packing across pods |
-| Observability | Per-instance agents | Centralized with Prometheus |
+A empresa já corre 2 web servers com nginx containerizar é o passo natural. Com EKS ganhamos coisas que com EC2 + ASG teríamos de construir à mão:
 
-Given the company already runs nginx web servers, containerizing the application and running it on Kubernetes provides a natural upgrade path while enabling horizontal scaling, rolling deployments, and built-in health checks.
+- **Scaling granular** — o HPA escala pods individualmente em vez de instâncias inteiras. Se a app precisa de mais 200Mi de RAM, não preciso de lançar uma máquina nova de 4GB.
+- **Self-healing** — se um processo crasha, o kubelet reinicia-o em segundos. Com EC2, dependemos do ASG que demora minutos.
+- **Rolling updates** — `maxSurge: 1, maxUnavailable: 0` garante que nunca há downtime durante deploys.
+- **Topology spread** — os pods ficam distribuídos entre AZs automaticamente.
+
+Para dev uso t3.micro (free tier), para produção seria t3.large ou m5.large dependendo do workload.
 
 ### Node groups
-- **System node group**: 2× `t3.medium` (monitoring, ingress controller, CoreDNS)
-- **Application node group**: 2-6× `t3.large` (auto-scaled based on CPU/memory)
-- Nodes spread across AZ-a and AZ-b for redundancy
 
----
+Em produção teria dois node groups:
+- **System** (2x t3.medium) para o monitoring stack, ingress controller, CoreDNS
+- **Application** (2-6x t3.large, auto-scaled) para os pods da aplicação
 
-## 3. Database — RDS MySQL Multi-AZ
+Em dev, para poupar, uso um único node group com t3.micro.
 
-### Why RDS over self-managed MySQL on EC2?
-- **Automated failover**: Multi-AZ standby is promoted within 60-120 seconds
-- **Automated backups**: Daily snapshots + point-in-time recovery (35-day retention)
-- **Encryption**: KMS-managed keys for at-rest encryption, SSL for in-transit
-- **Maintenance**: Automated patching during maintenance windows
-- **Monitoring**: Enhanced monitoring + Performance Insights
+## RDS MySQL
 
-### Migration path
-Use **AWS Database Migration Service (DMS)** for:
-1. Full load of existing data
-2. Continuous replication (CDC) during migration window
-3. Cutover with minimal downtime
+Este é talvez o componente mais crítico da migração. O setup actual tem um único MySQL sem replicação qualquer falha de disco ou de rede significa downtime e potencial perda de dados.
 
----
+Com RDS Multi-AZ:
+- A AWS mantém uma réplica síncrona noutra AZ
+- Se a primária falhar, o failover é automático em 60-120 segundos
+- O endpoint DNS não muda a aplicação nem nota
 
-## 4. Load Balancing — ALB + WAF
+Configurei também backups automáticos (point-in-time recovery), slow query log, e Performance Insights para dar visibilidade ao DBA.
 
-The physical firewall/load balancer is replaced by:
-- **ALB** in public subnets — Layer 7 routing, health checks, sticky sessions
-- **WAF** attached to ALB — OWASP Top 10 rule set, rate limiting, geo-blocking
-- **ACM certificate** — Free TLS termination at the ALB
+O `require_secure_transport = 1` no parameter group força todas as conexões a usar SSL nenhum dado viaja em claro entre a app e a base de dados.
 
-The ALB integrates natively with EKS via the AWS Load Balancer Controller, which creates ALB target groups from Kubernetes Ingress resources.
+## Load Balancing (ALB + WAF)
 
----
+O firewall físico actual faz duas coisas: firewall e load balancing. Na AWS separei isto em dois serviços:
 
-## 5. Observability — Replacing Nagios
+- **ALB** — faz o load balancing Layer 7, com health checks nos pods e sticky sessions se necessário
+- **WAF** — protecção contra os ataques mais comuns (SQLi, XSS, path traversal) usando os managed rule sets da AWS, mais um rate limiter de 2000 requests/5min por IP
 
-| Current (Nagios) | Target |
-|-------------------|--------|
-| CPU/Memory/Disk/Load | Prometheus node_exporter + kube-state-metrics |
-| Local log files | CloudWatch Logs via Fluent Bit |
-| Email alerts | Grafana alerts → Slack/PagerDuty |
-| Agent-based | Pull-based (Prometheus) + push (CloudWatch) |
+O ALB fica nas public subnets, é o único ponto de entrada da internet. Termina TLS com certificados do ACM o tráfego entre o ALB e os pods pode ser HTTP dentro da VPC, ou HTTPS se quisermos end-to-end encryption.
 
-### Stack
-- **Prometheus**: Metrics collection from all pods and nodes
-- **Grafana**: Dashboards and alerting
-- **Fluent Bit**: Log aggregation to CloudWatch Logs
-- **CloudWatch**: AWS service metrics (RDS, ALB, EKS control plane)
+## Observabilidade
 
----
+O Nagios actual monitoriza CPU, memória, disco e load. Com a stack que montei, cobrimos isso e muito mais:
 
-## 6. Content Delivery
+| Nagios | Novo equivalente |
+|--------|-----------------|
+| CPU/Memory por servidor | Métricas por container via Prometheus |
+| Disk space | PVC monitoring + node_exporter |
+| Load average | kube-state-metrics (pod scheduling, pending, etc.) |
+| Alertas por email | Alertmanager → Slack/PagerDuty |
+| Dashboard web | Grafana com dashboards pré-configurados |
 
-- **CloudFront** distribution in front of ALB for dynamic content caching
-- **S3 bucket** for static assets (JS, CSS, images) served via CloudFront
-- **Route 53** for DNS with health check-based failover routing
+O Prometheus faz scraping de métricas a cada 15 segundos. O Grafana vem com 3 dashboards da comunidade pré-carregados (cluster overview, node exporter, pods).
 
----
+## Diferenças entre ambientes
 
-## 7. Cost Optimization Notes
+Mantive a mesma arquitectura nos 3 ambientes mas com recursos ajustados:
 
-- Use **Spot instances** for dev/staging EKS node groups (up to 70% savings)
-- Use **Reserved Instances** for production RDS
-- **S3 Intelligent-Tiering** for backups and logs
-- **Right-sizing** via CloudWatch Container Insights recommendations
-- Single NAT Gateway in dev, Multi-AZ NAT in production
+| | Dev | Staging | Prod |
+|---|-----|---------|------|
+| NAT Gateway | 1 (single AZ) | 1 | 2 (multi-AZ) |
+| EKS nodes | 1-2x t3.micro | 2-4x t3.large | 2-6x t3.large |
+| Node type | spot | spot | on-demand |
+| RDS | db.t3.micro, single-AZ | db.t3.large, multi-AZ | db.r6g.large, multi-AZ |
+| Backups | 7 dias | 14 dias | 35 dias |
+| Deletion protection | não | não | sim |
+| Monitoring storage | sem PVC | com PVC | com PVC |
+
+Isto permite testar a arquitectura completa em dev sem gastar muito, e ter confiança de que o que funciona em staging vai funcionar em prod.

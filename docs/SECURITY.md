@@ -1,143 +1,87 @@
-# Security Design
+# Segurança
 
-## Network Security
+Tentei organizar a segurança em camadas — se uma falha, a próxima segura.
 
-### Subnet Isolation
+## Rede
 
-Traffic flow is strictly controlled through Security Groups and NACLs:
+O princípio é simples: só expor o mínimo necessário.
 
-```
-Internet → IGW → Public Subnets (ALB only)
-                      │
-                 Security Group: allow 443 from 0.0.0.0/0
-                      │
-              Private Subnets (EKS nodes)
-                      │
-                 Security Group: allow app-port from ALB SG only
-                      │
-               Data Subnets (RDS, ElastiCache)
-                      │
-                 Security Group: allow 3306/6379 from EKS SG only
-```
+As subnets públicas só têm o ALB e o NAT Gateway. Os worker nodes do EKS ficam em subnets privadas não têm IP público, o tráfego de saída passa pelo NAT. A base de dados e o cache ficam em subnets isoladas que nem sequer têm rota para a internet.
 
-### Security Group Rules
+Os Security Groups controlam quem fala com quem:
 
-| SG Name | Inbound | Source |
-|---------|---------|--------|
-| `sg-alb` | 443 (HTTPS) | 0.0.0.0/0 |
-| `sg-eks-nodes` | App port | `sg-alb` |
-| `sg-eks-nodes` | 10250 (kubelet) | `sg-eks-nodes` |
-| `sg-rds` | 3306 (MySQL) | `sg-eks-nodes` |
-| `sg-redis` | 6379 (Redis) | `sg-eks-nodes` |
+| SG | Permite | Origem |
+|----|---------|--------|
+| ALB | porta 443 | 0.0.0.0/0 (internet) |
+| EKS nodes | porta da app | só o SG do ALB |
+| RDS | porta 3306 | só o SG dos EKS nodes |
 
-All other traffic is **denied by default**.
+Tudo o resto é negado por omissão.
 
----
+Activei também VPC Flow Logs para CloudWatch dá visibilidade sobre o tráfego de rede para troubleshooting e auditorias.
 
-## Encryption
+## Encriptação
 
-### At-Rest
-| Resource | Encryption | Key Management |
-|----------|-----------|----------------|
-| RDS MySQL | AES-256 | AWS KMS (CMK) |
-| EBS volumes (EKS nodes) | AES-256 | AWS KMS (CMK) |
-| S3 buckets | SSE-S3 / SSE-KMS | AWS KMS |
-| ECR images | AES-256 | AWS KMS |
-| Secrets Manager | AES-256 | AWS KMS (CMK) |
+### At-rest
 
-### In-Transit
-| Path | Protocol | Certificate |
-|------|----------|-------------|
-| User → CloudFront | TLS 1.2+ | ACM |
-| CloudFront → ALB | TLS 1.2+ | ACM |
-| ALB → EKS pods | TLS 1.2+ | ACM / self-signed |
-| EKS → RDS | TLS (force SSL) | RDS CA bundle |
-| EKS → ElastiCache | TLS | ElastiCache in-transit |
+Tudo o que armazena dados está encriptado:
+- RDS AES-256 com chave KMS gerida (CMK com rotação automática)
+- EBS volumes dos nodes mesma abordagem
+- S3 buckets SSE-KMS
+- ECR images encriptação por omissão
+- Secrets Manager KMS
 
----
+### In-transit
 
-## Identity & Access Management
+- Utilizadores > CloudFront/ALB TLS 1.2+ com certificados ACM (grátis)
+- ALB > pods pode ser HTTP dentro da VPC ou HTTPS se quisermos end-to-end
+- Pods > RDS SSL obrigatório (require_secure_transport = 1 no parameter group)
+- Pods > ElastiCache TLS activado na configuração do cluster
 
-### IRSA (IAM Roles for Service Accounts)
+## Identidade e acessos
 
-Instead of embedding AWS credentials in pods, each Kubernetes ServiceAccount is mapped to an IAM Role via OIDC federation:
+### No pipeline (CI/CD)
 
-```hcl
-# Example: App pod needs S3 read access
-module "app_irsa" {
-  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  
-  role_name = "app-s3-reader"
-  
-  oidc_providers = {
-    main = {
-      provider_arn = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["default:app-sa"]
-    }
-  }
-  
-  role_policy_arns = {
-    s3 = "arn:aws:iam::policy/app-s3-read-only"
-  }
-}
-```
+Não uso access keys estáticas no GitHub. Em vez disso, configurei OIDC federation:
 
-### Principle of Least Privilege
+1. O módulo `github-oidc` cria um OpenID Connect provider na AWS
+2. Um IAM Role com trust policy que só aceita tokens JWT do repositório específico
+3. Quando o workflow corre, o GitHub pede um token ao OIDC provider
+4. A AWS valida o token e devolve credenciais temporárias
 
-- EKS nodes: minimal IAM role (ECR pull, CloudWatch logs, EBS CSI)
-- Application pods: only the permissions they need via IRSA
-- CI/CD: separate IAM user with scoped permissions per environment
-- Terraform: assumes role with admin permissions, MFA required
+Resultado: o único secret no GitHub é o ARN do role. Sem chaves para rodar, sem risco de leak.
 
----
+### No cluster (IRSA)
 
-## WAF Configuration
+Os pods não usam credenciais da instância EC2. Cada ServiceAccount do Kubernetes pode ser mapeado para um IAM Role via IRSA (IAM Roles for Service Accounts). Assim cada pod tem exactamente as permissões que precisa nada mais.
 
-AWS WAF is attached to the ALB with the following rule groups:
+### Secrets da aplicação
 
-1. **AWS Managed Rules — Common Rule Set**: Blocks common exploits (XSS, SQLi, path traversal)
-2. **AWS Managed Rules — Known Bad Inputs**: Blocks known malicious patterns
-3. **Rate-based Rule**: Limits 2000 requests per 5 minutes per IP
-4. **Geo-restriction**: (Optional) Allow only expected countries
+Em dev/staging, os secrets ficam em Kubernetes Secrets normais (criados pelo Helm chart). Em produção, uso o External Secrets Operator que puxa os segredos do AWS Secrets Manager assim os secrets nunca são commitados em Git nem ficam em variáveis de ambiente visíveis.
 
----
+## WAF
 
-## Container Security
+O AWS WAF está associado ao ALB com 3 regras:
+- **Common Rule Set** — bloqueia XSS, SQLi, path traversal e os ataques mais frequentes
+- **SQL Injection Rule Set** — regras adicionais específicas para SQLi
+- **Rate limiting** — máximo 2000 requests por IP em 5 minutos, depois bloqueia
 
-- **Base image**: `gcr.io/distroless/static-debian12` — minimal attack surface
-- **Trivy scanning**: Every image is scanned for CVEs before push to ECR
-- **Read-only filesystem**: Pod `securityContext.readOnlyRootFilesystem: true`
-- **Non-root user**: Containers run as UID 65534 (nobody)
-- **No privilege escalation**: `allowPrivilegeEscalation: false`
-- **Network Policies**: Only allow necessary pod-to-pod communication
+## Containers
 
----
+A imagem Docker da aplicação usa:
+- Base distroless (gcr.io/distroless) sem shell, sem package manager, superfície de ataque mínima
+- Multi-stage build o Go binary é compilado numa imagem com toolchain e depois copiado para a imagem final limpa
+- Non-root corre como UID 65534
+- Read-only filesystem não consegue escrever em disco
+- Trivy scan no CI todas as imagens são verificadas antes de ir para o ECR
 
-## Secrets Management
-
-Application secrets (DB credentials, API keys) are stored in **AWS Secrets Manager** and injected into pods via the **External Secrets Operator**:
-
+No Kubernetes, o security context do pod reforça tudo isto:
 ```yaml
-apiVersion: external-secrets.io/v1beta1
-kind: ExternalSecret
-metadata:
-  name: app-secrets
-spec:
-  refreshInterval: 1h
-  secretStoreRef:
-    name: aws-secrets-manager
-    kind: ClusterSecretStore
-  target:
-    name: app-secrets
-  data:
-    - secretKey: DB_PASSWORD
-      remoteRef:
-        key: prod/app/database
-        property: password
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
 ```
-
-This avoids storing secrets in:
-- Environment variables in manifests
-- ConfigMaps
-- Git repositories
-- Docker images

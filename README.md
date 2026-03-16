@@ -1,219 +1,177 @@
 # AWS Cloud Migration
 
-## 📋 Overview
+Projeto desenvolvido para o desafio técnico para a posição de DevOps Engineer.
 
-This project proposes a **complete cloud migration strategy** from a single on-premises datacenter to AWS, addressing the company's need for **redundancy, high availability, and scalability**.
+## Contexto
 
-### Current State (On-Premises)
-- 2 web servers (nginx) behind a physical firewall/load balancer
-- 1 MySQL database (no replication)
-- Nagios monitoring (CPU, memory, disk, load)
-- No disaster recovery, no redundancy
-- Single point of failure at every layer
+A empresa tem uma aplicação web/mobile a correr num datacenter on-premises com a seguinte stack:
+- 2 servidores web (nginx) atrás de um firewall físico que faz load balancing
+- 1 base de dados MySQL sem replicação
+- Nagios para monitorização básica (CPU, memória, disco)
+- Sem disaster recovery, sem redundância
 
-### Target State (AWS)
-- Multi-AZ EKS cluster with auto-scaling
-- RDS MySQL Multi-AZ with automated failover
-- Application Load Balancer with WAF
-- Full observability stack (Prometheus + Grafana + CloudWatch)
-- Infrastructure as Code (Terraform)
-- CI/CD with GitHub Actions
-- Encryption at-rest and in-transit
+O objectivo é migrar para AWS com foco em redundância e alta disponibilidade.
 
----
+## O que fiz
 
-## 🏗️ Architecture
+Desenhei e implementei uma arquitectura AWS completa com Infrastructure as Code. Em vez de só fazer o diagrama, decidi ir mais longe e criar toda a infra funcional com Terraform, uma aplicação de exemplo em Go, CI/CD com GitHub Actions e monitorização com Prometheus/Grafana.
 
-```
-                    ┌─────────────┐
-                    │   Route 53  │
-                    │ + CloudFront│
-                    │   + WAF     │
-                    └──────┬──────┘
-                           │
-              ┌────────────┴────────────┐
-              │   Application Load      │
-              │      Balancer           │
-              │   (Public Subnets)      │
-              └────────────┬────────────┘
-                           │
-         ┌─────────────────┴─────────────────┐
-         │         EKS Cluster               │
-         │      (Private Subnets)            │
-         │                                   │
-         │  ┌──────────┐  ┌──────────┐       │
-         │  │ Node AZ-a│  │ Node AZ-b│       │
-         │  │ App Pods  │  │ App Pods │       │
-         │  └──────────┘  └──────────┘       │
-         │                                   │
-         │  ┌─────────────────────────┐      │
-         │  │ Prometheus + Grafana    │      │
-         │  └─────────────────────────┘      │
-         └───────────────┬───────────────────┘
-                         │
-         ┌───────────────┴───────────────┐
-         │     Data Subnets (Isolated)   │
-         │                               │
-         │  ┌─────────┐  ┌───────────┐   │
-         │  │RDS MySQL│  │ElastiCache│   │
-         │  │Multi-AZ │  │  Redis    │   │
-         │  └─────────┘  └───────────┘   │
-         └───────────────────────────────┘
-```
-
-See `docs/` for detailed architecture diagrams.
-
----
-
-## 📁 Project Structure
+### Estrutura do projecto
 
 ```
 .
-├── README.md                          # This file
-├── docs/                              # Architecture documentation
-│   ├── ARCHITECTURE.md                # Detailed architecture decisions
-│   ├── MIGRATION_STRATEGY.md          # Migration plan & hybrid strategy
-│   └── SECURITY.md                    # Security design
-├── terraform/                         # Infrastructure as Code
-│   ├── modules/                       # Reusable Terraform modules
-│   │   ├── vpc/                       # VPC, subnets, NAT, IGW
-│   │   ├── eks/                       # EKS cluster & node groups
-│   │   ├── rds/                       # RDS MySQL Multi-AZ
-│   │   ├── alb/                       # ALB + WAF + ACM
-│   │   ├── ecr/                       # Container registry
-│   │   └── monitoring/                # CloudWatch alarms & dashboards
-│   └── environments/                  # Per-environment configurations
-│       ├── dev/                       # Development account
-│       ├── staging/                   # Staging account
-│       └── prod/                      # Production account
-├── app/                               # Go application (stopwatch)
-│   ├── main.go                        # Application source code
-│   ├── go.mod                         # Go module definition
-│   ├── Dockerfile                     # Multi-stage Docker build
-│   └── README.md                      # App documentation
-├── k8s/                               # Kubernetes manifests (Kustomize)
-│   ├── base/                          # Base manifests
-│   │   ├── deployment.yaml
-│   │   ├── service.yaml
-│   │   ├── ingress.yaml
-│   │   ├── hpa.yaml
-│   │   └── kustomization.yaml
-│   └── overlays/                      # Per-environment patches
-│       ├── dev/
-│       ├── staging/
-│       └── prod/
-├── monitoring/                        # Observability stack
-│   ├── prometheus-values.yaml         # Prometheus Helm chart values
-│   ├── grafana-values.yaml            # Grafana Helm chart values
-│   └── alerts.yaml                    # Alerting rules
-└── .github/workflows/                 # CI/CD pipelines
-    ├── ci.yaml                        # Build, test, scan, push
-    └── cd.yaml                        # Deploy to EKS per environment
+├── app/                    # Aplicação Go (cronómetro + relógio)
+│   ├── main.go
+│   ├── Dockerfile
+│   └── go.mod
+├── charts/app/             # Helm chart para deploy no K8s
+├── terraform/
+│   ├── VPC/                # Rede com 3 camadas de subnets
+│   ├── EKS/                # Cluster Kubernetes
+│   ├── RDS/                # MySQL Multi-AZ
+│   ├── ALB/                # Load balancer + WAF
+│   ├── ECR/                # Registry de imagens Docker
+│   ├── monitoring/         # Prometheus + Grafana via Helm
+│   ├── S3/                 # Backend do Terraform state
+│   └── environments/       # Configurações por ambiente (dev/stg/prd)
+├── docs/                   # Documentação técnica
+└── .github/workflows/      # Pipelines CI/CD
 ```
 
----
+## Arquitectura AWS
 
-## 🔧 AWS Services Used
+Cada componente on-premises tem um equivalente gerido na AWS:
 
-| Service | Purpose | Replaces |
-|---------|---------|----------|
-| **VPC** | Network isolation with public/private/data subnets | Physical network |
-| **EKS** | Managed Kubernetes for container orchestration | Bare-metal web servers |
-| **RDS MySQL** | Managed database with Multi-AZ failover | Single MySQL server |
-| **ALB** | Layer 7 load balancing with health checks | Physical firewall/LB |
-| **CloudFront** | CDN for static assets and edge caching | — |
-| **Route 53** | DNS management with health checks and failover | — |
-| **WAF** | Web Application Firewall rules | Physical firewall |
-| **ECR** | Private Docker registry | — |
-| **ElastiCache** | Redis for session management | — |
-| **S3** | Static assets, backups, Terraform state | Local disk |
-| **KMS** | Encryption key management (at-rest) | — |
-| **Secrets Manager** | Database credentials, API keys | Config files |
-| **CloudWatch** | Centralized logging and metrics | Nagios |
-| **ACM** | TLS certificates (in-transit encryption) | — |
-| **NAT Gateway** | Outbound internet for private subnets | — |
+| On-premises | AWS | Porquê |
+|-------------|-----|--------|
+| Firewall/LB | ALB + WAF | Layer 7, health checks, protecção OWASP |
+| 2x nginx | EKS (Kubernetes) | Auto-scaling, self-healing, rolling deploys |
+| MySQL (single) | RDS Multi-AZ | Failover automático em ~60s, backups diários |
+| Nagios | Prometheus + Grafana + CloudWatch | Métricas de containers, dashboards, alertas |
+| — | Route 53 + CloudFront | DNS com failover, CDN na edge |
 
----
+### Rede
 
-## 🚀 Quick Start
+Optei por 3 camadas de subnets seguindo o princípio de defence-in-depth:
 
-### Prerequisites
-- AWS CLI configured with appropriate profiles
-- Terraform >= 1.6
-- kubectl
-- Docker
-- Go >= 1.22
+- **Public** (10.0.1.0/24, 10.0.2.0/24) — só o ALB e o NAT Gateway ficam aqui, expostos à internet
+- **Private** (10.0.10.0/24, 10.0.20.0/24) — os worker nodes do EKS, sem acesso directo da internet
+- **Data** (10.0.100.0/24, 10.0.200.0/24) — RDS e ElastiCache, totalmente isolados, sem rota para a internet
 
-### 1. Deploy Infrastructure (Dev)
+O tráfego só flui numa direcção: internet > ALB (public) > pods (private) > base de dados (data). Cada transição é controlada por Security Groups.
+
+### Kubernetes (EKS)
+
+Escolhi EKS em vez de EC2 puro porque a empresa já tem 2 web servers o passo natural é containerizar e orquestrar. Com Kubernetes ganhamos:
+- HPA para escalar pods com base em CPU/memória
+- Rolling updates sem downtime
+- Self-healing (pods que crasham são recriados)
+- Topology spread para distribuir pods entre AZs
+
+### Base de dados
+
+RDS MySQL com Multi-AZ resolve o maior ponto de falha da arquitectura actual uma única instância de MySQL sem replicação. Com Multi-AZ, se a instância primária falhar, o failover para a standby demora 60-120 segundos e é automático.
+
+Configurei também:
+- Encriptação at-rest com KMS (chave gerida)
+- SSL obrigatório nas conexões (require_secure_transport = 1)
+- Enhanced Monitoring + Performance Insights
+- Backups automáticos com retenção configurável por ambiente
+
+### Segurança
+
+Tentei cobrir as três áreas que o desafio pede:
+
+**Encriptação at-rest** — KMS para RDS, EBS volumes, ECR e Secrets Manager
+
+**Encriptação in-transit** — TLS no ALB (via ACM), SSL forçado no RDS, HTTPS entre CloudFront e ALB
+
+**IAM** — O pipeline usa OIDC federation em vez de access keys estáticas. O GitHub Actions troca um JWT token por credenciais temporárias da AWS. Zero segredos armazenados.
+
+## CI/CD
+
+O pipeline está dividido em dois workflows:
+
+**terraform.yaml** — Gere a infraestrutura. Quando faço push de alterações na pasta `terraform/`, detecta qual ambiente mudou e faz `terraform apply`. Também tem opção manual para destroy.
+
+**ci.yaml** — Gerei a aplicação. Quando altero código na pasta `app/`:
+1. Corre os testes Go
+2. Builda a imagem Docker
+3. Faz scan de vulnerabilidades com Trivy
+4. Push para o ECR
+5. Deploy no EKS via `helm upgrade`
+
+O deploy para produção tem um approval gate — alguém precisa de aprovar manualmente no GitHub antes de avançar.
+
+### Autenticação
+
+Não uso access keys no GitHub. Em vez disso:
+- O módulo `terraform/S3/github-oidc` cria um OIDC provider na AWS e um IAM Role
+- A trust policy só aceita tokens vindos deste repositório específico
+- O único secret no GitHub é o ARN desse role
+
+## Monitorização
+
+O kube-prometheus-stack é instalado automaticamente pelo Terraform via Helm provider. Inclui:
+- Prometheus para colecta de métricas
+- Grafana com dashboards pré-configurados (cluster, nodes, pods)
+- Alertmanager para routing de alertas
+- node-exporter nos nós (substitui as métricas do Nagios)
+- kube-state-metrics para métricas do Kubernetes
+
+## Aplicação
+
+Criei uma aplicação simples em Go com dois features, um cronómetro e um relógio para demonstrar o pipeline completo. Tem:
+- API REST (start/stop/reset/lap)
+- Web UI responsiva
+- Endpoints de health (/healthz, /readyz) para os probes do Kubernetes
+- Dockerfile multi-stage com imagem distroless (segurança)
+- Corre como non-root (UID 65534)
+
+## Helm Chart
+
+O deploy da aplicação é feito via Helm chart próprio (`charts/app/`) com templates para:
+- Deployment (rolling update, topology spread, security context)
+- Service, Ingress (ALB annotations)
+- HPA, PDB
+- Secret / ExternalSecret (para integração com AWS Secrets Manager)
+- ServiceAccount (com IRSA annotation)
+- ServiceMonitor (descoberta automática pelo Prometheus)
+- NetworkPolicy
+
+Os valores variam por ambiente — dev usa menos recursos e réplicas, prod usa mais.
+
+## Estratégia de migração
+
+Detalho isto nos docs mas em resumo propus 3 fases:
+
+1. **Híbrido** — On-prem como primário, AWS como failover via Route 53 + DMS replication
+2. **Cutover** — Janela de manutenção (~10 min), promover RDS, switch DNS
+3. **Optimização** — CloudFront, auto-scaling, Reserved Instances, decommission on-prem
+
+## Como correr
 
 ```bash
-cd terraform/environments/dev
-terraform init
-terraform plan
-terraform apply
+# 1. Bootstrap (S3 + DynamoDB para state)
+cd terraform/S3/backend && terraform init && terraform apply
+
+# 2. OIDC para GitHub Actions
+cd terraform/S3/github-oidc && terraform apply
+
+# 3. Configurar GitHub secret AWS_ROLE_ARN
+
+# 4. Push → pipeline faz o resto
+git push origin main
+
+# 5. Aceder ao cluster
+aws eks update-kubeconfig --name aws-challenge-dev --region us-east-1
+kubectl port-forward svc/stopwatch-stopwatch-app -n stopwatch-dev 8080:80
 ```
 
-### 2. Build & Push Application
+## Decisões que tomei
 
-```bash
-cd app
-docker build -t stopwatch-app:latest .
-# Tag and push to ECR (see CI/CD pipeline)
-```
-
-### 3. Deploy to Kubernetes
-
-```bash
-kubectl apply -k k8s/overlays/dev/
-```
-
-### 4. Install Monitoring
-
-```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm install monitoring prometheus-community/kube-prometheus-stack \
-  -f monitoring/prometheus-values.yaml \
-  -n monitoring --create-namespace
-```
-
----
-
-## 🔒 Security Highlights
-
-- **Network segmentation**: Public subnets (ALB, NAT), Private subnets (EKS), Data subnets (RDS, ElastiCache)
-- **Encryption at-rest**: KMS-managed keys for RDS, EBS, S3, ECR
-- **Encryption in-transit**: TLS 1.2+ via ACM certificates on ALB, mutual TLS between pods
-- **Secrets management**: AWS Secrets Manager integrated with EKS via External Secrets Operator
-- **IAM**: IRSA (IAM Roles for Service Accounts) — no static credentials
-- **WAF**: OWASP Top 10 rule set on CloudFront/ALB
-- **Security scanning**: Trivy image scanning in CI pipeline
-
----
-
-## 🔄 CI/CD Strategy
-
-The deployment pipeline uses **GitHub Actions** with separate workflows for CI and CD:
-
-1. **CI** (on push/PR): Lint → Test → Build Docker image → Scan with Trivy → Push to ECR
-2. **CD** (on merge to main/release branches): Terraform plan/apply → Kustomize deploy to EKS
-
-Environment promotion follows: `dev` → `staging` → `prod` with manual approval gates for production.
-
----
-
-## 🔀 Hybrid / Partial Migration Strategy
-
-For a phased approach where on-prem remains active with cloud failover:
-
-1. **AWS Site-to-Site VPN** or **Direct Connect** between on-prem and VPC
-2. **Route 53 failover routing** with health checks on the on-prem endpoint
-3. **RDS as read replica** of on-prem MySQL (via DMS), promoted on failover
-4. Cloud environment stays warm (reduced capacity) until failover triggers
-
-See `docs/MIGRATION_STRATEGY.md` for the complete plan.
-
----
-
-## 📄 License
-
-This project was created as part of the DevOps Engineer recruitment process.
+- **EKS em vez de ECS** — mais flexível, portável, e permite demonstrar Helm/monitoring de forma mais completa
+- **Helm em vez de kubectl apply** — templates reutilizáveis, rollback fácil, values por ambiente
+- **OIDC em vez de IAM keys** — best practice actual, sem rotação de credenciais
+- **t3.micro para dev** — conta free tier, em prod seria t3.large ou maior
+- **3 tiers de subnets** — mais seguro que o típico public/private, isola completamente a camada de dados
