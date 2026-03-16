@@ -1,0 +1,17 @@
+  {{- if .Values.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "stopwatch.fullname" . }}
+  labels:
+    {{- include "stopwatch.labels" . | nindent 4 }}
+    release: monitoring  # Necessário para o Prometheus descobrir
+spec:
+  selector:
+    matchLabels:
+      {{- include "stopwatch.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      interval: {{ .Values.serviceMonitor.interval }}
+      path: {{ .Values.serviceMonitor.path }}
+{{- end }}

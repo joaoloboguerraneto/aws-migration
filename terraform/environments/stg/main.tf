@@ -1,0 +1,55 @@
+module "vpc" {
+  source             = "../../VPC"
+  project_name       = var.project_name
+  environment        = "staging"
+  single_nat_gateway = true
+}
+
+module "ecr" {
+  source           = "../../ECR"
+  project_name     = var.project_name
+  environment      = "staging"
+  repository_names = ["stopwatch-app"]
+}
+
+module "eks" {
+  source              = "../../EKS"
+  project_name        = var.project_name
+  environment         = "staging"
+  vpc_id              = module.vpc.vpc_id
+  private_subnet_ids  = module.vpc.private_subnet_ids
+  node_instance_types = ["t3.large"]
+  node_min_size       = 2
+  node_max_size       = 4
+  node_desired_size   = 2
+}
+
+module "alb" {
+  source            = "../../ALB"
+  project_name      = var.project_name
+  environment       = "staging"
+  vpc_id            = module.vpc.vpc_id
+  public_subnet_ids = module.vpc.public_subnet_ids
+}
+
+module "rds" {
+  source                     = "../../RDS"
+  project_name               = var.project_name
+  environment                = "staging"
+  vpc_id                     = module.vpc.vpc_id
+  data_subnet_ids            = module.vpc.data_subnet_ids
+  allowed_security_group_ids = [module.eks.node_security_group_id]
+  instance_class             = "db.t3.large"
+  allocated_storage          = 50
+  multi_az                   = true  # Testar failover em staging
+  backup_retention_period    = 14
+}
+
+module "monitoring" {
+  source           = "../../MONITORING"
+  project_name     = var.project_name
+  environment      = "staging"
+  eks_cluster_name = module.eks.cluster_name
+  rds_instance_id  = module.rds.rds_instance_id
+  alb_arn_suffix   = module.alb.alb_arn_suffix
+}

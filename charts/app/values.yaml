@@ -1,0 +1,157 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# values.yaml — Valores padrão do chart
+# ─────────────────────────────────────────────────────────────────────────────
+# Cada environment (dev/staging/prod) sobrescreve os valores relevantes
+# via Terraform helm_release set {} ou values files.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── Image ───────────────────────────────────
+image:
+  repository: ""  # Preenchido pelo Terraform com o URL do ECR
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# ─── Replicas & Scaling ─────────────────────
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  scaleUp:
+    stabilizationWindowSeconds: 60
+    maxPods: 2
+    periodSeconds: 60
+  scaleDown:
+    stabilizationWindowSeconds: 300
+    maxPods: 1
+    periodSeconds: 120
+
+# ─── Container ───────────────────────────────
+containerPort: 8080
+
+env: []
+  # - name: DB_HOST
+  #   value: "rds-endpoint"
+  # - name: SOME_SECRET
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: app-secrets
+  #       key: SOME_SECRET
+
+# ─── Resources ───────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi
+
+# ─── Health Probes ───────────────────────────
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  failureThreshold: 3
+
+# ─── Service ─────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80
+
+# ─── Ingress ─────────────────────────────────
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    alb.ingress.kubernetes.io/wafv2-acl-arn: ""  # Preenchido pelo Terraform
+  hosts:
+    - paths:
+        - path: /
+          pathType: Prefix
+
+# ─── Secrets ─────────────────────────────────
+# Cria um Kubernetes Secret com os valores abaixo.
+# Em prod, usar External Secrets Operator em vez disto.
+secrets:
+  enabled: false
+  data: {}
+    # DB_PASSWORD: "changeme"
+    # API_KEY: "changeme"
+
+# ─── External Secrets (produção) ─────────────
+externalSecrets:
+  enabled: false
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+  data: []
+    # - secretKey: DB_PASSWORD
+    #   remoteRef:
+    #     key: prod/app/database
+    #     property: password
+
+# ─── Service Account (IRSA) ─────────────────
+serviceAccount:
+  create: true
+  name: stopwatch-sa
+  annotations: {}
+    # eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT:role/stopwatch-role"
+
+# ─── Pod Disruption Budget ───────────────────
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ─── Network Policy ─────────────────────────
+networkPolicy:
+  enabled: true
+
+# ─── Security Context ───────────────────────
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# ─── Pod Topology Spread ────────────────────
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: DoNotSchedule
+
+# ─── Service Monitor (Prometheus) ────────────
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  path: /metrics
+
+# ─── Extra Labels ───────────────────────────
+labels: {}
+annotations: {}

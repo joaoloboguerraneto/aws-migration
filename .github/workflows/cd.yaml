@@ -1,0 +1,106 @@
+name: CD — Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI — Build & Push"]
+    types: [completed]
+    branches: [main]
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options: [dev, stg, prd]
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT_NAME: aws-migration
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+    steps:
+      - name: Set environment
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "environment=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+  terraform:
+    name: "Terraform — ${{ needs.prepare.outputs.environment }}"
+    runs-on: ubuntu-latest
+    needs: prepare
+    environment: ${{ needs.prepare.outputs.environment }}
+    defaults:
+      run:
+        working-directory: terraform/environments/${{ needs.prepare.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Terraform Init
+        run: terraform init -backend-config=../../backend.hcl
+
+      - name: Terraform Plan
+        run: terraform plan -no-color -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+  deploy:
+    name: "Deploy K8s — ${{ needs.prepare.outputs.environment }}"
+    runs-on: ubuntu-latest
+    needs: [prepare, terraform]
+    environment: ${{ needs.prepare.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.PROJECT_NAME }}-${{ needs.prepare.outputs.environment }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm upgrade
+        run: |
+          ENV="${{ needs.prepare.outputs.environment }}"
+          SHA=$(git rev-parse --short HEAD)
+          ECR_REGISTRY=$(aws ecr describe-repositories --query 'repositories[0].repositoryUri' --output text | cut -d/ -f1)
+
+          helm upgrade --install stopwatch ./charts/app \
+            --namespace stopwatch-${ENV} \
+            --create-namespace \
+            --set image.repository=${ECR_REGISTRY}/${{ env.PROJECT_NAME }}/stopwatch-app \
+            --set image.tag=sha-${SHA} \
+            --wait --timeout 5m

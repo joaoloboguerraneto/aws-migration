@@ -1,0 +1,24 @@
+╔══════════════════════════════════════════════════╗
+║Stopwatch & Clock — Deployed!             ║
+╚══════════════════════════════════════════════════╝
+
+Application URL:
+{{- if .Values.ingress.enabled }}
+  Check the ALB address:
+    kubectl get ingress {{ include "stopwatch.fullname" . }} -n {{ .Release.Namespace }}
+{{- else }}
+  kubectl port-forward svc/{{ include "stopwatch.fullname" . }} -n {{ .Release.Namespace }} 8080:{{ .Values.service.port }}
+  Then open: http://localhost:8080
+{{- end }}
+
+Health checks:
+  /healthz  — Liveness probe
+  /readyz   — Readiness probe
+
+API endpoints:
+  GET  /api/clock              — Server time (UTC)
+  GET  /api/stopwatch/{id}     — Get stopwatch state
+  POST /api/stopwatch/{id}/start
+  POST /api/stopwatch/{id}/stop
+  POST /api/stopwatch/{id}/reset
+  POST /api/stopwatch/{id}/lap
