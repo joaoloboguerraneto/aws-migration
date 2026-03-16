@@ -6,7 +6,6 @@ terraform {
       version = "~> 5.0"
     }
   }
-  # State LOCAL - este módulo cria o bucket, não pode depender dele
 }
 
 provider "aws" {

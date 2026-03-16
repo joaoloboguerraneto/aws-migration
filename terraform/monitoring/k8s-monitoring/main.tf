@@ -1,17 +1,3 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Kubernetes Monitoring Stack
-# ─────────────────────────────────────────────────────────────────────────────
-# Instala Prometheus + Grafana + Alertmanager no EKS via Helm provider.
-# Assim quando faz "terraform apply", o monitoring já sobe automaticamente.
-#
-# Usa o chart kube-prometheus-stack que inclui:
-#   - Prometheus Server (métricas)
-#   - Grafana (dashboards)
-#   - Alertmanager (alertas)
-#   - Node Exporter (métricas dos nós - substitui Nagios)
-#   - kube-state-metrics (métricas do Kubernetes)
-# ─────────────────────────────────────────────────────────────────────────────
-
 resource "kubernetes_namespace" "monitoring" {
   metadata {
     name = "monitoring"

@@ -1,21 +1,3 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# GitHub Actions OIDC Authentication
-# ─────────────────────────────────────────────────────────────────────────────
-# Permite que o GitHub Actions assuma um IAM Role via OIDC federation,
-# sem precisar de AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
-#
-# Isto é a best practice da AWS - zero credenciais estáticas.
-#
-# Uso:
-#   cd terraform/github-oidc
-#   terraform init -backend-config=../../backend.hcl  (ou local para bootstrap)
-#   terraform apply -var="github_org=SEU_USER" -var="github_repo=aws-migration-challenge"
-#
-# Depois, no GitHub repo:
-#   Settings → Secrets → New secret:
-#     AWS_ROLE_ARN = (output deste módulo)
-# ─────────────────────────────────────────────────────────────────────────────
-
 resource "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 

@@ -48,10 +48,11 @@ module "rds" {
 }
 
 module "monitoring" {
-  source           = "../../MONITORING"
-  project_name     = var.project_name
-  environment      = "prod"
-  eks_cluster_name = module.eks.cluster_name
-  rds_instance_id  = module.rds.rds_instance_id
-  alb_arn_suffix   = module.alb.alb_arn_suffix
+  source                     = "../../monitoring/k8s-monitoring"
+  project_name               = var.project_name
+  environment                = "dev"
+  eks_cluster_name           = module.eks.cluster_name
+  eks_cluster_endpoint       = module.eks.cluster_endpoint
+  eks_cluster_ca_certificate = module.eks.cluster_ca_certificate
+  depends_on                 = [module.eks]
 }
